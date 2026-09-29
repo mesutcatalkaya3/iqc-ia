@@ -1291,6 +1291,9 @@ async function runHybridScan(){
           };
         });
         cam.scanSummary = aiRes.summary || '';
+        console.log('🔵 GEMINI RAW RESPONSE:', JSON.stringify(aiRes, null, 2));
+console.log('🔵 DETECTED:', aiDets.length, 'ürün');
+if(aiDets.length === 0) console.log('🔵 SORUN: Gemini hiç ürün eşleştirmedi. Response:', aiRes);
       }catch(e){
         console.warn('Gemini hata:', e);
         toast('AI hatası: ' + e.message, 'warn');
@@ -1327,12 +1330,15 @@ async function runHybridScan(){
       const ac = all.filter(d => d.method === 'AI').length;
       toast(qc + ' QR + ' + ac + ' AI = ' + all.length + ' ürün','ok');
     }
-  }catch(e){
-    console.error('Tarama hata:', e);
-    cam.phase = 'scanned';
-    updateCamUI();
-    toast('Tarama hatası: ' + e.message,'err');
-  }
+}catch(e){
+  console.error('Tarama hata:', e);
+  cam.phase = 'scanned';
+  updateCamUI();
+  // HATA DETAYI ekranda göster
+  setTimeout(()=>{
+    alert('🔴 TARAMA HATASI\n\nMesaj: ' + e.message + '\n\nDetay: ' + (e.stack || 'yok'));
+  }, 500);
+}
 }
 
 /* ============ DRAW ============ */

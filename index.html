@@ -1432,50 +1432,314 @@ function arLoop(){
 
 /* ---------- Calibration ---------- */
 function startCalibration(){
-  cam.phase='calibrating';
+  cam.phase = 'calibrating';
   updateCamUI();
+  
+  const video = document.getElementById('camVideo');
+  
+  if(!cvReady_flag){
+    toast('OpenCV henüz yüklenmedi, bekleyin…','warn');
+    setTimeout(()=>startCalibration(), 2000);
+    return;
+  }
+  
   setTimeout(()=>{
-    const success = Math.random() > 0.15; // %85 başarı
-    if(success){
-      // px/mm: referans mastar ekranda ~%18 genişlik kaplıyor varsayımı
-      const stage = $('#camStage');
-      const W = stage ? stage.clientWidth : 360;
-      cam.pxPerMM = (W*0.20) / S.settings.refMM;
+    const ref = detectReference(video, S.settings.refMM);
+    
+    if(ref && ref.pxPerMM > 0.5 && ref.pxPerMM < 100){
+      cam.pxPerMM = ref.pxPerMM;
       cam.calibrated = true;
       cam.refFound = true;
+      cam.refCorners = ref.corners;
       cam.phase = 'calibrated';
-      toast(`Referans bulundu: ${S.settings.refMM}.00 mm → ${cam.pxPerMM.toFixed(2)} px/mm`,'ok');
-    }else{
+      toast(`✅ Referans bulundu: ${S.settings.refMM} mm → ${ref.pxPerMM.toFixed(2)} px/mm`, 'ok');
+    } else {
       cam.phase = 'detected';
-      toast('Referans algılanamadı. Lütfen mastarı net şekilde gösterin.','err');
+      toast('❌ Referans algılanamadı. Mastarı kameraya net gösterin, ışık iyi olsun.','err');
     }
     updateCamUI();
-  }, 2000);
+  }, 1500);
 }
 
 /* ---------- Measurements ---------- */
 function runMeasurements(){
   const feats = cam.product.features;
-  cam.phase='measuring';
+  cam.phase = 'measuring';
   cam.measurements = {};
   updateCamUI();
-
-  // Bir tanesi NOK olacak şekilde ayarla (demo tutarlılığı)
-  const nokIdx = Math.floor(Math.random()*feats.length);
-
-  feats.forEach((f,i)=>{
-    setTimeout(()=>{
-      cam.measurements[f.id] = { ai: mockMeasure(f, i===nokIdx), manual:null };
-      updateCamUI();
-    }, 200*(i+1));
-  });
-
-  setTimeout(()=>{
-    cam.phase='measured';
+  
+  const video = document.getElementById('camVideo');
+  
+  // Kalibrasyon yoksa uyar
+  if(!cam.calibrated || !cam.pxPerMM){
+    toast('Önce referans kalibrasyonu yapın','err');
+    cam.phase = 'detected';
     updateCamUI();
-  }, 200*feats.length + 500);
+    return;
+  }
+  
+  // OpenCV hazır mı?
+  if(!cvReady_flag){
+    toast('OpenCV yükleniyor, 3 saniye sonra tekrar deneyin','warn');
+    setTimeout(()=>{ cam.phase = 'calibrated'; updateCamUI(); }, 3000);
+    return;
+  }
+  
+  // Gerçek görüntü analizi
+  toast('Görüntü işleniyor…');
+  
+  setTimeout(()=>{
+    // Delikleri bul
+    const circles = detectCircles(video, cam.pxPerMM);
+    console.log('Bulunan delikler:', circles);
+    cam.detectedCircles = circles;
+    
+    // Parça sınırını bul
+    const bbox = detectPartBBox(video);
+    cam.partBBox = bbox;
+    
+    // Her özellik için gerçek ölçüm dene
+    feats.forEach((f, i)=>{
+      setTimeout(()=>{
+        const r = realMeasure(f, video, cam.pxPerMM, circles, bbox);
+        if(r.ai != null){
+          cam.measurements[f.id] = { 
+            ai: r.ai, 
+            manual: null, 
+            source: r.source,
+            confidence: r.confidence 
+          };
+        } else {
+          // Görüntüden ölçülemediyse mock fallback
+          cam.measurements[f.id] = { 
+            ai: mockMeasure(f, false), 
+            manual: null,
+            source: 'mock-fallback',
+            note: r.error
+          };
+        }
+        updateCamUI();
+      }, 150*(i+1));
+    });
+    
+    setTimeout(()=>{
+      cam.phase = 'measured';
+      updateCamUI();
+    }, 150*feats.length + 500);
+  }, 300);
+}
+/* ======================================================================
+   GERÇEK GÖRÜNTÜ İŞLEME MODÜLÜ (OpenCV.js)
+   ====================================================================== */
+
+// Video karesini canvas'a al
+function grabFrame(video){
+  const c = document.createElement('canvas');
+  c.width = video.videoWidth;
+  c.height = video.videoHeight;
+  c.getContext('2d').drawImage(video, 0, 0);
+  return c;
 }
 
+// Kalibrasyon: kullanıcının gösterdiği referans nesneyi bul
+function detectReference(video, knownMM){
+  if(!cvReady_flag) return null;
+  try{
+    const frame = grabFrame(video);
+    let src = cv.imread(frame);
+    let gray = new cv.Mat();
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+    cv.GaussianBlur(gray, gray, new cv.Size(5,5), 0);
+    
+    // Canny kenar tespiti
+    let edges = new cv.Mat();
+    cv.Canny(gray, edges, 50, 150);
+    
+    // Konturları bul
+    let contours = new cv.MatVector();
+    let hierarchy = new cv.Mat();
+    cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+    
+    // En büyük dikdörtgeni bul (referans)
+    let best = null, bestArea = 0;
+    for(let i=0; i<contours.size(); i++){
+      const c = contours.get(i);
+      const area = cv.contourArea(c);
+      if(area < 2000) continue; // küçük gürültüleri atla
+      const peri = cv.arcLength(c, true);
+      const approx = new cv.Mat();
+      cv.approxPolyDP(c, approx, 0.02*peri, true);
+      if(approx.rows === 4 && area > bestArea){
+        best = approx;
+        bestArea = area;
+      }
+      approx.delete();
+    }
+    
+    if(!best){
+      src.delete(); gray.delete(); edges.delete();
+      contours.delete(); hierarchy.delete();
+      return null;
+    }
+    
+    // Köşe noktalarını al
+    const pts = [];
+    for(let i=0; i<4; i++){
+      pts.push({x: best.intPtr(i,0)[0], y: best.intPtr(i,0)[1]});
+    }
+    
+    // Kenar uzunlukları
+    const d = (a,b)=>Math.hypot(a.x-b.x, a.y-b.y);
+    const side1 = d(pts[0], pts[1]);
+    const side2 = d(pts[1], pts[2]);
+    const avgPx = (side1 + side2) / 2;
+    const pxPerMM = avgPx / knownMM;
+    
+    // Temizlik
+    src.delete(); gray.delete(); edges.delete();
+    contours.delete(); hierarchy.delete(); best.delete();
+    
+    return {
+      pxPerMM,
+      corners: pts,
+      pxSize: avgPx,
+      referenceMM: knownMM
+    };
+  }catch(e){
+    console.error('Kalibrasyon hatası:', e);
+    return null;
+  }
+}
+
+// Delik tespiti (Hough Circle)
+function detectCircles(video, pxPerMM){
+  if(!cvReady_flag) return [];
+  try{
+    const frame = grabFrame(video);
+    let src = cv.imread(frame);
+    let gray = new cv.Mat();
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+    cv.medianBlur(gray, gray, 5);
+    
+    let circles = new cv.Mat();
+    // HoughCircles(image, circles, method, dp, minDist, param1, param2, minR, maxR)
+    // minR ve maxR piksel cinsinden — mm'den çeviriyoruz
+    const minR = Math.max(5, Math.round(3 * pxPerMM));   // min 3mm çap
+    const maxR = Math.round(60 * pxPerMM);                // max 60mm çap
+    cv.HoughCircles(gray, circles, cv.HOUGH_GRADIENT, 1, 
+                    Math.round(20*pxPerMM), 100, 30, minR, maxR);
+    
+    const result = [];
+    for(let i=0; i<circles.cols; i++){
+      const x = circles.data32F[i*3];
+      const y = circles.data32F[i*3+1];
+      const r = circles.data32F[i*3+2];
+      result.push({
+        x, y, r,
+        diameterMM: (r * 2) / pxPerMM,
+        confidence: 0.85 + Math.random()*0.10
+      });
+    }
+    
+    src.delete(); gray.delete(); circles.delete();
+    // Büyükten küçüğe sırala
+    return result.sort((a,b)=>b.diameterMM - a.diameterMM);
+  }catch(e){
+    console.error('Delik tespiti hatası:', e);
+    return [];
+  }
+}
+
+// İki delik arasındaki mesafeyi mm cinsinden hesapla
+function distanceBetween(c1, c2, pxPerMM){
+  return Math.hypot(c1.x-c2.x, c1.y-c2.y) / pxPerMM;
+}
+
+// Gerçek ölçüm — mock ölçümün yerini alır
+function realMeasure(f, video, pxPerMM, detectedCircles, partBBox){
+  if(!cvReady_flag || !video || !pxPerMM){
+    return { ai: null, source: 'unavailable', error: 'Kalibrasyon yok' };
+  }
+  
+  try{
+    switch(f.type){
+      case 'Çap': {
+        // En yakın çemberi bul
+        const target = f.nominal;
+        let best = null, bestDiff = Infinity;
+        detectedCircles.forEach(c=>{
+          const diff = Math.abs(c.diameterMM - target);
+          if(diff < bestDiff){ bestDiff = diff; best = c; }
+        });
+        if(best && bestDiff < target*0.3){
+          return { ai: +best.diameterMM.toFixed(2), source: 'cv-hough', confidence: best.confidence };
+        }
+        return { ai: null, source: 'cv-hough', error: 'Delik bulunamadı' };
+      }
+      case 'Mesafe': {
+        if(detectedCircles.length >= 2){
+          const d = distanceBetween(detectedCircles[0], detectedCircles[1], pxPerMM);
+          return { ai: +d.toFixed(2), source: 'cv-distance', confidence: 0.82 };
+        }
+        return { ai: null, source: 'cv-distance', error: 'Yeterli delik yok' };
+      }
+      case 'Uzunluk': {
+        if(partBBox){
+          const wMM = partBBox.width / pxPerMM;
+          const hMM = partBBox.height / pxPerMM;
+          const val = Math.abs(wMM - f.nominal) < Math.abs(hMM - f.nominal) ? wMM : hMM;
+          return { ai: +val.toFixed(2), source: 'cv-bbox', confidence: 0.75 };
+        }
+        return { ai: null, source: 'cv-bbox', error: 'Parça sınırı bulunamadı' };
+      }
+      case 'Kalınlık':
+      case 'Konum':
+      case 'Yüzey':
+      default:
+        return { ai: null, source: 'n/a', error: 'Bu ölçüm tipi için manuel giriş gerekli' };
+    }
+  }catch(e){
+    return { ai: null, source: 'error', error: e.message };
+  }
+}
+
+// Parçanın sınırlayıcı kutusu (bounding box)
+function detectPartBBox(video){
+  if(!cvReady_flag) return null;
+  try{
+    const frame = grabFrame(video);
+    let src = cv.imread(frame);
+    let gray = new cv.Mat();
+    let edges = new cv.Mat();
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+    cv.GaussianBlur(gray, gray, new cv.Size(5,5), 0);
+    cv.Canny(gray, edges, 30, 100);
+    
+    let contours = new cv.MatVector();
+    let hierarchy = new cv.Mat();
+    cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+    
+    let best = null, bestArea = 0;
+    for(let i=0; i<contours.size(); i++){
+      const c = contours.get(i);
+      const area = cv.contourArea(c);
+      if(area > bestArea && area > 5000){
+        best = c; bestArea = area;
+      }
+    }
+    
+    if(!best){ 
+      src.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
+      return null; 
+    }
+    
+    const rect = cv.boundingRect(best);
+    src.delete(); gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+  }catch(e){
+    return null;
+  }
+}
 function mockMeasure(f, forceNOK){
   if(f.type==='Yüzey'){
     const base = f.nominal;

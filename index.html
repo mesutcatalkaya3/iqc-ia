@@ -1194,6 +1194,7 @@ async function runGeminiScan(video){
   parts.push({text: 'KAMERA FOTOĞRAFI:\n'});
   parts.push({inline_data: {mime_type: 'image/jpeg', data: frameData}});
   parts.push({text: '\n\nREFERANS TEKNİK RESİMLER:\n'});
+  alert('📊 Gönderilecek:\n\nKamera görsel: ' + Math.round(frameData.length/1024) + ' KB\nReferans sayısı: ' + refs.length + '\nİlk referans: ' + (refs[0]?.code || 'YOK') + '\nİlk referans boyutu: ' + (refs[0]?.techDrawing ? Math.round(refs[0].techDrawing.length/1024) + ' KB' : 'YOK'));
   refs.forEach((r, i) => {
     parts.push({text: '\n[REFERANS ' + (i+1) + '] Kod: ' + r.code + ' | Ad: ' + r.name + '\n'});
     const m = r.techDrawing.match(/^data:([^;]+);base64,(.+)$/);

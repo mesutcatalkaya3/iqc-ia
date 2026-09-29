@@ -1,6 +1,15 @@
 <!doctype html>
 <html lang="tr">
 <head>
+<script>
+window.onerror = function(msg, url, line){
+  document.body.innerHTML = '<div style="padding:20px;color:#f00;font-family:monospace;background:#fff;font-size:13px;line-height:1.6">' +
+    '<b style="font-size:15px">HATA BULUNDU:</b><br><br>' +
+    '<b>Mesaj:</b> ' + msg + '<br><br>' +
+    '<b>Satır:</b> ' + line + '</div>';
+  return true;
+};
+</script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#0a0e13">

@@ -1298,9 +1298,9 @@ async function runHybridScan(){
 console.log('🔵 DETECTED:', aiDets.length, 'ürün');
 if(aiDets.length === 0) console.log('🔵 SORUN: Gemini hiç ürün eşleştirmedi. Response:', aiRes);
       }catch(e){
-        console.warn('Gemini hata:', e);
-        toast('AI hatası: ' + e.message, 'warn');
-      }
+    console.error('Gemini hata:', e);
+    alert('🔴 AI HATA:\n\n' + e.message + '\n\nDetay: ' + JSON.stringify(e, null, 2).substring(0, 500));
+  }
     }
 
     // 3. Birleştir
